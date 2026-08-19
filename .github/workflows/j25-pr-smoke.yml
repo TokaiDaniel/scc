@@ -7,6 +7,10 @@ on:
       - 'j25_fullrules/**'
       - '.github/workflows/j25-pr-smoke.yml'
 
+concurrency:
+  group: j25-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
