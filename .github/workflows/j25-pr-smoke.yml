@@ -37,4 +37,11 @@ jobs:
           cd ..
           printf 'userDir=./userdata\ncacheDir=./cache\ncardPicsDir=./cache/pics/cards\ndecksDir=./userdata/decks\ndecksConstructedDir=./userdata/decks/constructed\n' > forge-runtime/forge.profile.properties
           mkdir -p forge-runtime/userdata/decks/constructed forge-runtime/cache
-          python j25_fullrules/j25_sim.py selftest --forge-jar forge-runtime/forge.jar --workdir smoke-work
+          python j25_fullrules/j25_sim.py shard \
+            --forge-jar forge-runtime/forge.jar \
+            --workdir smoke-work \
+            --output smoke-work/smoke.csv \
+            --shard 0 --shards 100000 \
+            --rounds 1 --group-size 2 \
+            --match-size 1 --timeout 180
+          test -s smoke-work/smoke.csv
