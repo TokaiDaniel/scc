@@ -10,6 +10,10 @@ on:
       - 'j25_fullrules/j25_sim_entry.py'
   workflow_dispatch:
 
+concurrency:
+  group: j25-fullrules-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
