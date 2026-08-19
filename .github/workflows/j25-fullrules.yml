@@ -1,0 +1,208 @@
+name: J25 Forge Full Rules Simulation
+
+on:
+  push:
+    branches: [j25-forge-sim]
+    paths:
+      - '.github/workflows/j25-fullrules.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORGE_TAG: forge-2.0.13
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  build-forge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Obtain Forge runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p forge-runtime
+          API="https://api.github.com/repos/Card-Forge/forge/releases/tags/${FORGE_TAG}"
+          curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "$API" > release.json || true
+          URL=""
+          NAME=""
+          if jq -e '.assets | length > 0' release.json >/dev/null 2>&1; then
+            URL=$(jq -r '[.assets[] | select((.name|endswith(".tar.bz2")) or (.name|endswith(".zip")))] | sort_by(.size) | reverse | .[0].browser_download_url // empty' release.json)
+            NAME=$(jq -r '[.assets[] | select(.browser_download_url == "'"$URL"'")] | .[0].name // empty' release.json)
+          fi
+          if [ -n "$URL" ]; then
+            echo "Downloading Forge release asset: $NAME"
+            curl -fL --retry 4 -H "Authorization: Bearer ${GH_TOKEN}" "$URL" -o "forge-package"
+            mkdir -p extracted
+            if [[ "$NAME" == *.tar.bz2 ]]; then
+              tar -xjf forge-package -C extracted
+            elif [[ "$NAME" == *.zip ]]; then
+              unzip -q forge-package -d extracted
+            fi
+            JAR=$(find extracted -type f -name 'forge-gui-desktop-*-jar-with-dependencies.jar' | head -1 || true)
+            RES=$(find extracted -type d -path '*/res/cardsfolder' -print | head -1 | xargs -r dirname || true)
+            if [ -n "$JAR" ] && [ -n "$RES" ]; then
+              cp "$JAR" forge-runtime/forge.jar
+              cp -R "$RES" forge-runtime/res
+            fi
+          fi
+          if [ ! -s forge-runtime/forge.jar ] || [ ! -d forge-runtime/res/cardsfolder ]; then
+            echo "Release package unavailable/incomplete; building Forge from official source."
+            rm -rf forge-src
+            git clone --depth 1 --branch "$FORGE_TAG" https://github.com/Card-Forge/forge.git forge-src
+            cd forge-src
+            mvn -B -ntp -pl forge-gui-desktop -am package -DskipTests
+            JAR=$(find forge-gui-desktop/target -maxdepth 1 -type f -name '*jar-with-dependencies.jar' | head -1)
+            test -n "$JAR"
+            cp "$JAR" ../forge-runtime/forge.jar
+            cp -R forge-gui/res ../forge-runtime/res
+            cd ..
+          fi
+          test -s forge-runtime/forge.jar
+          test -d forge-runtime/res/cardsfolder
+          printf 'userDir=./userdata\ncacheDir=./cache\ncardPicsDir=./cache/pics/cards\ndecksDir=./userdata/decks\ndecksConstructedDir=./userdata/decks/constructed\n' > forge-runtime/forge.profile.properties
+          mkdir -p forge-runtime/userdata forge-runtime/cache
+          java -version
+          ls -lh forge-runtime/forge.jar
+      - name: Upload Forge runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: forge-runtime
+          path: forge-runtime
+          retention-days: 3
+          compression-level: 1
+
+  baseline:
+    needs: build-forge
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11]
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: forge-runtime
+          path: forge-runtime
+      - name: Run full-field sampled round robins
+        run: |
+          mkdir -p shard-out
+          python j25_fullrules/j25_sim.py shard \
+            --forge-jar forge-runtime/forge.jar \
+            --workdir work \
+            --output shard-out/result-${{ matrix.shard }}.csv \
+            --shard ${{ matrix.shard }} --shards 12 \
+            --rounds 3 --group-size 16 --match-size 1 --timeout 180
+          cp work/combo_map.csv shard-out/combo_map-${{ matrix.shard }}.csv
+      - name: Upload shard results
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-${{ matrix.shard }}
+          path: shard-out
+          retention-days: 7
+          compression-level: 6
+
+  aggregate-baseline:
+    needs: baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: baseline-*
+          path: baseline-results
+          merge-multiple: true
+      - name: Aggregate baseline
+        run: |
+          MAP=$(find baseline-results -name 'combo_map-*.csv' | head -1)
+          python j25_fullrules/j25_sim.py aggregate --inputs baseline-results --combo-map "$MAP" --output aggregate
+      - uses: actions/upload-artifact@v4
+        with:
+          name: baseline-aggregate
+          path: aggregate
+          retention-days: 7
+
+  refine-top64:
+    needs: [build-forge, aggregate-baseline]
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: forge-runtime
+          path: forge-runtime
+      - uses: actions/download-artifact@v4
+        with:
+          name: baseline-aggregate
+          path: aggregate
+      - name: Full top-64 round robin, best of three
+        run: |
+          mkdir -p refine-out
+          python j25_fullrules/j25_sim.py refine \
+            --forge-jar forge-runtime/forge.jar \
+            --workdir refine-work \
+            --top-ids aggregate/top64.txt \
+            --output refine-out/top64.csv \
+            --match-size 3 --timeout 240
+      - uses: actions/upload-artifact@v4
+        with:
+          name: top64-refinement
+          path: refine-out
+          retention-days: 7
+
+  final-report:
+    needs: [baseline, refine-top64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: baseline-*
+          path: all-results
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: top64-refinement
+          path: all-results/refine
+      - name: Build final ranking
+        run: |
+          MAP=$(find all-results -name 'combo_map-*.csv' | head -1)
+          python j25_fullrules/j25_sim.py aggregate --inputs all-results --combo-map "$MAP" --output final
+          cp "$MAP" final/combo_map.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: J25-FULL-RULES-FINAL
+          path: final
+          retention-days: 14
