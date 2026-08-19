@@ -25,6 +25,7 @@ jobs:
           python-version: '3.12'
       - name: Validate J25 runner and Forge build path
         run: |
+          set -euo pipefail
           python -m py_compile j25_fullrules/j25_sim.py
           git clone --depth 1 --branch forge-2.0.13 https://github.com/Card-Forge/forge.git forge-src
           cd forge-src
@@ -37,6 +38,19 @@ jobs:
           cd ..
           printf 'userDir=./userdata\ncacheDir=./cache\ncardPicsDir=./cache/pics/cards\ndecksDir=./userdata/decks\ndecksConstructedDir=./userdata/decks/constructed\n' > forge-runtime/forge.profile.properties
           mkdir -p forge-runtime/userdata/decks/constructed forge-runtime/cache
+
+          if ! command -v xvfb-run >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y xvfb
+          fi
+          mkdir -p "$RUNNER_TEMP/j25-bin"
+          cat > "$RUNNER_TEMP/j25-bin/java" <<'EOF'
+          #!/usr/bin/env bash
+          exec xvfb-run -a "$JAVA_HOME/bin/java" "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/j25-bin/java"
+          export PATH="$RUNNER_TEMP/j25-bin:$PATH"
+
           python j25_fullrules/j25_sim.py shard \
             --forge-jar forge-runtime/forge.jar \
             --workdir smoke-work \
@@ -45,3 +59,5 @@ jobs:
             --rounds 1 --group-size 2 \
             --match-size 1 --timeout 180
           test -s smoke-work/smoke.csv
+          echo '--- SMOKE RESULT ---'
+          cat smoke-work/smoke.csv
