@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/j25-fullrules.yml'
       - 'j25_fullrules/j25_sim_v2.py'
+      - 'j25_fullrules/j25_sim_v3.py'
   workflow_dispatch:
 
 permissions:
@@ -26,7 +27,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - name: Build pinned Forge runtime
+      - name: Build pinned stable Forge runtime
         run: |
           set -euo pipefail
           git clone --depth 1 --branch "$FORGE_TAG" https://github.com/Card-Forge/forge.git forge-src
@@ -37,12 +38,14 @@ jobs:
           mkdir -p ../forge-runtime
           cp "$JAR" ../forge-runtime/forge.jar
           cp -R forge-gui/res ../forge-runtime/res
+          git rev-parse HEAD > ../forge-runtime/FORGE_COMMIT.txt
           cd ..
           test -s forge-runtime/forge.jar
           test -d forge-runtime/res/cardsfolder
           printf 'userDir=./userdata\ncacheDir=./cache\ncardPicsDir=./cache/pics/cards\ndecksDir=./userdata/decks\ndecksConstructedDir=./userdata/decks/constructed\n' > forge-runtime/forge.profile.properties
           mkdir -p forge-runtime/userdata/decks/constructed forge-runtime/cache
           java -version
+          cat forge-runtime/FORGE_COMMIT.txt
           ls -lh forge-runtime/forge.jar
       - uses: actions/upload-artifact@v4
         with:
@@ -67,11 +70,12 @@ jobs:
       - name: Validate pinned J25 packets and Forge card coverage
         run: |
           set -euo pipefail
-          python -m py_compile j25_fullrules/j25_sim_v2.py
-          python j25_fullrules/j25_sim_v2.py audit \
+          python -m py_compile j25_fullrules/j25_sim_v2.py j25_fullrules/j25_sim_v3.py
+          python j25_fullrules/j25_sim_v3.py audit \
             --forge-res forge-runtime/res \
             --workdir audit-work \
             --output audit/audit.json
+          cp forge-runtime/FORGE_COMMIT.txt audit/FORGE_COMMIT.txt
       - uses: actions/upload-artifact@v4
         with:
           name: j25-input-audit
@@ -106,21 +110,24 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y xvfb
           fi
-      - name: Run full-field sampled round robins
+      - name: Run full-field sampled round robins with clean timeout replay
         run: |
           set -euo pipefail
           mkdir -p shard-out
-          python j25_fullrules/j25_sim_v2.py shard \
+          python j25_fullrules/j25_sim_v3.py shard \
             --forge-jar forge-runtime/forge.jar \
             --workdir work \
             --output shard-out/result-${{ matrix.shard }}.csv \
             --shard ${{ matrix.shard }} --shards 48 \
-            --rounds 3 --group-size 16 --match-size 1 --timeout 180
+            --rounds 3 --group-size 16 \
+            --timeout 180 --retry-timeout 600 --final-retry-timeout 1200
           cp work/combo_map.csv shard-out/combo_map-${{ matrix.shard }}.csv
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: baseline-${{ matrix.shard }}
           path: shard-out
+          if-no-files-found: warn
           retention-days: 14
           compression-level: 6
 
@@ -137,12 +144,22 @@ jobs:
           pattern: baseline-*
           path: baseline-results
           merge-multiple: true
-      - name: Aggregate baseline
+      - name: Aggregate and strictly validate baseline
         run: |
           set -euo pipefail
           MAP=$(find baseline-results -name 'combo_map-*.csv' | head -1)
           test -n "$MAP"
-          python j25_fullrules/j25_sim_v2.py aggregate --inputs baseline-results --combo-map "$MAP" --output aggregate
+          python j25_fullrules/j25_sim_v3.py aggregate --inputs baseline-results --combo-map "$MAP" --output aggregate
+          python - <<'PY'
+          import json
+          s=json.load(open('aggregate/summary.json'))
+          assert s['match_results']==165990, s['match_results']
+          assert s['decks']==7381 and s['packets']==121
+          assert s['decks_with_zero_games']==0
+          assert s['telemetry'].get('quarantine_rows',0)==0, s['telemetry']
+          assert s['telemetry'].get('unresolved_timeout_pairs',0)==0, s['telemetry']
+          print('BASELINE_VALIDATION_OK', s['min_games_per_deck'], s['median_games_per_deck'], s['max_games_per_deck'])
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: baseline-aggregate
@@ -157,7 +174,7 @@ jobs:
       matrix:
         repeat: [0,1,2,3]
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v5
@@ -181,20 +198,23 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y xvfb
           fi
-      - name: Top-64 full round robin, repeated BO1
+      - name: Top-64 complete round robin, repeated BO1 with clean timeout replay
         run: |
           set -euo pipefail
           mkdir -p refine-out
-          python j25_fullrules/j25_sim_v2.py refine \
+          python j25_fullrules/j25_sim_v3.py refine \
             --forge-jar forge-runtime/forge.jar \
             --workdir refine-work \
             --top-ids aggregate/top64.txt \
             --output refine-out/top64-${{ matrix.repeat }}.csv \
-            --repeats 1 --repeat-id ${{ matrix.repeat }} --timeout 240
+            --repeats 1 --repeat-id ${{ matrix.repeat }} \
+            --timeout 300 --retry-timeout 900 --final-retry-timeout 1500
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: top64-refinement-${{ matrix.repeat }}
           path: refine-out
+          if-no-files-found: warn
           retention-days: 14
 
   final-report:
@@ -219,19 +239,24 @@ jobs:
         with:
           name: j25-input-audit
           path: audit
-      - name: Build and validate final ranking
+      - name: Build and strictly validate final ranking
         run: |
           set -euo pipefail
           MAP=$(find all-results/baseline -name 'combo_map-*.csv' | head -1)
           test -n "$MAP"
-          python j25_fullrules/j25_sim_v2.py aggregate --inputs all-results --combo-map "$MAP" --output final
+          python j25_fullrules/j25_sim_v3.py aggregate --inputs all-results --combo-map "$MAP" --output final
           cp "$MAP" final/combo_map.csv
           cp audit/audit.json final/audit.json
+          cp audit/FORGE_COMMIT.txt final/FORGE_COMMIT.txt
           python - <<'PY'
           import csv, json
           from pathlib import Path
           s=json.loads(Path('final/summary.json').read_text())
+          assert s['match_results']==174054, s['match_results']
           assert s['decks']==7381 and s['packets']==121
+          assert s['decks_with_zero_games']==0
+          assert s['telemetry'].get('quarantine_rows',0)==0, s['telemetry']
+          assert s['telemetry'].get('unresolved_timeout_pairs',0)==0, s['telemetry']
           rows=list(csv.DictReader(open('final/combo_ranking.csv')))
           assert len(rows)==7381
           assert all(int(r['games'])>0 for r in rows)
