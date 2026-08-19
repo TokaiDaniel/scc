@@ -44,8 +44,12 @@ def parse_packet(name: str, text: str):
 
 def theme_name(packet_stem: str):
     m = re.match(r"^(.*) \((\d+)\)$", packet_stem)
-    if not m: raise RuntimeError(f"Packet filename lacks variant suffix: {packet_stem}")
-    return m.group(1), int(m.group(2))
+    if m:
+        return m.group(1), int(m.group(2))
+    # J25's 11 one-variant mythic themes are stored without a '(1)' suffix.
+    # Treat an unsuffixed packet as the sole variant; the global 11/15/20
+    # structure check below still catches any unexpected filename pattern.
+    return packet_stem, 1
 
 
 def validate_packet_structure(names):
