@@ -1,0 +1,40 @@
+name: J25 Forge PR Smoke
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'j25_fullrules/**'
+      - '.github/workflows/j25-pr-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate J25 runner and Forge build path
+        run: |
+          python -m py_compile j25_fullrules/j25_sim.py
+          git clone --depth 1 --branch forge-2.0.13 https://github.com/Card-Forge/forge.git forge-src
+          cd forge-src
+          mvn -B -ntp -pl forge-gui-desktop -am package -DskipTests
+          JAR=$(find forge-gui-desktop/target -maxdepth 1 -type f -name '*jar-with-dependencies.jar' | head -1)
+          test -n "$JAR"
+          mkdir -p ../forge-runtime
+          cp "$JAR" ../forge-runtime/forge.jar
+          cp -R forge-gui/res ../forge-runtime/res
+          cd ..
+          printf 'userDir=./userdata\ncacheDir=./cache\ncardPicsDir=./cache/pics/cards\ndecksDir=./userdata/decks\ndecksConstructedDir=./userdata/decks/constructed\n' > forge-runtime/forge.profile.properties
+          mkdir -p forge-runtime/userdata/decks/constructed forge-runtime/cache
+          python j25_fullrules/j25_sim.py selftest --forge-jar forge-runtime/forge.jar --workdir smoke-work
