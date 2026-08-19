@@ -7,6 +7,7 @@ on:
       - '.github/workflows/j25-fullrules.yml'
       - 'j25_fullrules/j25_sim_v2.py'
       - 'j25_fullrules/j25_sim_v3.py'
+      - 'j25_fullrules/j25_sim_entry.py'
   workflow_dispatch:
 
 permissions:
@@ -70,8 +71,8 @@ jobs:
       - name: Validate pinned J25 packets and Forge card coverage
         run: |
           set -euo pipefail
-          python -m py_compile j25_fullrules/j25_sim_v2.py j25_fullrules/j25_sim_v3.py
-          python j25_fullrules/j25_sim_v3.py audit \
+          python -m py_compile j25_fullrules/j25_sim_v2.py j25_fullrules/j25_sim_v3.py j25_fullrules/j25_sim_entry.py
+          python j25_fullrules/j25_sim_entry.py audit \
             --forge-res forge-runtime/res \
             --workdir audit-work \
             --output audit/audit.json
@@ -114,7 +115,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p shard-out
-          python j25_fullrules/j25_sim_v3.py shard \
+          python j25_fullrules/j25_sim_entry.py shard \
             --forge-jar forge-runtime/forge.jar \
             --workdir work \
             --output shard-out/result-${{ matrix.shard }}.csv \
@@ -149,7 +150,7 @@ jobs:
           set -euo pipefail
           MAP=$(find baseline-results -name 'combo_map-*.csv' | head -1)
           test -n "$MAP"
-          python j25_fullrules/j25_sim_v3.py aggregate --inputs baseline-results --combo-map "$MAP" --output aggregate
+          python j25_fullrules/j25_sim_entry.py aggregate --inputs baseline-results --combo-map "$MAP" --output aggregate
           python - <<'PY'
           import json
           s=json.load(open('aggregate/summary.json'))
@@ -202,7 +203,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p refine-out
-          python j25_fullrules/j25_sim_v3.py refine \
+          python j25_fullrules/j25_sim_entry.py refine \
             --forge-jar forge-runtime/forge.jar \
             --workdir refine-work \
             --top-ids aggregate/top64.txt \
@@ -244,7 +245,7 @@ jobs:
           set -euo pipefail
           MAP=$(find all-results/baseline -name 'combo_map-*.csv' | head -1)
           test -n "$MAP"
-          python j25_fullrules/j25_sim_v3.py aggregate --inputs all-results --combo-map "$MAP" --output final
+          python j25_fullrules/j25_sim_entry.py aggregate --inputs all-results --combo-map "$MAP" --output final
           cp "$MAP" final/combo_map.csv
           cp audit/audit.json final/audit.json
           cp audit/FORGE_COMMIT.txt final/FORGE_COMMIT.txt
