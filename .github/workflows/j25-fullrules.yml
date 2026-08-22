@@ -64,6 +64,7 @@ jobs:
             --workdir audit-work \
             --output audit/audit.json
           cp forge-runtime/FORGE_COMMIT.txt audit/FORGE_COMMIT.txt
+          cp -R audit-work/packets audit/packets
       - uses: actions/upload-artifact@v4
         with:
           name: forge-runtime
@@ -102,6 +103,10 @@ jobs:
         with:
           name: forge-runtime
           path: forge-runtime
+      - uses: actions/download-artifact@v4
+        with:
+          name: j25-input-audit
+          path: audit
       - name: Ensure virtual display
         run: |
           if ! command -v xvfb-run >/dev/null 2>&1; then
@@ -109,6 +114,8 @@ jobs:
             sudo apt-get install -y xvfb
           fi
       - name: Run full-field sampled round robins with clean timeout replay
+        env:
+          J25_PACKET_CACHE: ${{ github.workspace }}/audit/packets
         run: |
           set -euo pipefail
           mkdir -p shard-out
@@ -190,6 +197,10 @@ jobs:
         with:
           name: baseline-aggregate
           path: aggregate
+      - uses: actions/download-artifact@v4
+        with:
+          name: j25-input-audit
+          path: audit
       - name: Ensure virtual display
         run: |
           if ! command -v xvfb-run >/dev/null 2>&1; then
@@ -197,6 +208,8 @@ jobs:
             sudo apt-get install -y xvfb
           fi
       - name: Top-64 complete round robin, repeated BO1 with clean timeout replay
+        env:
+          J25_PACKET_CACHE: ${{ github.workspace }}/audit/packets
         run: |
           set -euo pipefail
           mkdir -p refine-out
