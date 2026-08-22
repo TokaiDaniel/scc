@@ -69,7 +69,7 @@ jobs:
         with:
           name: forge-runtime
           path: forge-runtime
-          retention-days: 3
+          retention-days: 7
           compression-level: 1
       - uses: actions/upload-artifact@v4
         with:
@@ -81,15 +81,14 @@ jobs:
     needs: build-forge
     strategy:
       fail-fast: false
-      # Current hosted-runner queues show severe fan-out pressure. Eight concurrent
-      # jobs keeps useful parallelism without the previous 20-job burst.
+      # Keep only eight hosted runners active at once. Finer 48-way sharding
+      # reduces stragglers after observed slow 32-way shards hit the 350-minute
+      # job timeout, without changing sampled groups or the exact match count.
       max-parallel: 8
       matrix:
-        # Sharding changes only job assignment (global_group % shards), not sampled
-        # groups or match count. 32 shards keeps each job comfortably below 6 hours.
-        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47]
     runs-on: ubuntu-latest
-    timeout-minutes: 350
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v5
@@ -123,7 +122,7 @@ jobs:
             --forge-jar forge-runtime/forge.jar \
             --workdir work \
             --output shard-out/result-${{ matrix.shard }}.csv \
-            --shard ${{ matrix.shard }} --shards 32 \
+            --shard ${{ matrix.shard }} --shards 48 \
             --rounds 3 --group-size 16 \
             --timeout 180 --retry-timeout 600 --final-retry-timeout 1200
           cp work/combo_map.csv shard-out/combo_map-${{ matrix.shard }}.csv
