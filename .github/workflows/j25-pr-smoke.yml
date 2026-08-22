@@ -1,0 +1,73 @@
+name: J25 Forge PR Smoke
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'j25_fullrules/**'
+      - '.github/workflows/j25-pr-smoke.yml'
+
+concurrency:
+  group: j25-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate resilient J25 runner and 120-game Forge benchmark
+        run: |
+          set -euo pipefail
+          python -m py_compile j25_fullrules/j25_sim_v2.py j25_fullrules/j25_sim_v3.py j25_fullrules/j25_sim_entry.py
+          git clone --depth 1 --branch forge-2.0.13 https://github.com/Card-Forge/forge.git forge-src
+          cd forge-src
+          mvn -B -ntp -pl forge-gui-desktop -am package -DskipTests
+          JAR=$(find forge-gui-desktop/target -maxdepth 1 -type f -name '*jar-with-dependencies.jar' | head -1)
+          test -n "$JAR"
+          mkdir -p ../forge-runtime
+          cp "$JAR" ../forge-runtime/forge.jar
+          cp -R forge-gui/res ../forge-runtime/res
+          cd ..
+          printf 'userDir=./userdata\ncacheDir=./cache\ncardPicsDir=./cache/pics/cards\ndecksDir=./userdata/decks\ndecksConstructedDir=./userdata/decks/constructed\n' > forge-runtime/forge.profile.properties
+          mkdir -p forge-runtime/userdata/decks/constructed forge-runtime/cache
+          if ! command -v xvfb-run >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y xvfb
+          fi
+          START=$(date +%s)
+          J25_XVFB=1 python j25_fullrules/j25_sim_entry.py shard \
+            --forge-jar forge-runtime/forge.jar \
+            --workdir smoke-work \
+            --output smoke-work/benchmark.csv \
+            --shard 0 --shards 100000 \
+            --rounds 1 --group-size 16 \
+            --timeout 180 --retry-timeout 300 --final-retry-timeout 600
+          END=$(date +%s)
+          test -s smoke-work/benchmark.csv
+          test -s smoke-work/benchmark.telemetry.json
+          ROWS=$(( $(wc -l < smoke-work/benchmark.csv) - 1 ))
+          test "$ROWS" -eq 120
+          python - <<'PY'
+          import csv, json
+          rows=list(csv.DictReader(open('smoke-work/benchmark.csv')))
+          assert len(rows)==120
+          assert all(r['winner'] in (r['deck_a'],r['deck_b']) for r in rows)
+          t=json.load(open('smoke-work/benchmark.telemetry.json'))
+          assert t['matches_written']==120 and t['groups_completed']==1
+          print('SMOKE_TELEMETRY', json.dumps(t, sort_keys=True))
+          PY
+          echo "BENCHMARK_MATCHES=$ROWS"
+          echo "BENCHMARK_SECONDS=$((END-START))"
+          head -6 smoke-work/benchmark.csv
