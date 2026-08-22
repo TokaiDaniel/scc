@@ -14,9 +14,15 @@ Before simulation we rewrite only those two pinned Forge card scripts to
 semantically equivalent arithmetic forms already supported by Forge. The
 actual Magic effects and Oracle text are unchanged. Exact old-script matching
 makes this fail loudly if the pinned runtime changes unexpectedly.
+
+Baseline/refinement jobs can also consume the packet cache produced by the
+single audited build job. This avoids every matrix shard independently hitting
+the GitHub Contents API while preserving the same pinned packet files.
 """
 from pathlib import Path
+import os
 import re
+import shutil
 import sys
 
 import j25_sim_v3 as impl
@@ -62,6 +68,49 @@ def patch_forge_double_pumps() -> None:
         print(f"FORGE_AI_PATCH applied {rel}")
 
 
+def install_bundled_packet_loader() -> None:
+    """Use the audited build artifact packet cache when J25_PACKET_CACHE is set."""
+    configured = os.environ.get("J25_PACKET_CACHE")
+    if not configured:
+        return
+    source = Path(configured).resolve()
+    if not source.is_dir():
+        raise RuntimeError(f"Bundled J25 packet cache missing: {source}")
+    source_files = sorted(source.glob("*.txt"))
+    if len(source_files) != impl.base.EXPECTED_PACKETS:
+        raise RuntimeError(
+            f"Bundled J25 packet cache has {len(source_files)} files, "
+            f"expected {impl.base.EXPECTED_PACKETS}"
+        )
+    stems = [p.stem for p in source_files]
+    impl.base.validate_packet_structure(stems)
+
+    def load_packets_from_bundle(cache: Path):
+        cache = Path(cache)
+        cache.mkdir(parents=True, exist_ok=True)
+        for src in source_files:
+            dst = cache / src.name
+            if not dst.exists():
+                shutil.copyfile(src, dst)
+        files = sorted(cache.glob("*.txt"))
+        if len(files) != impl.base.EXPECTED_PACKETS:
+            raise RuntimeError(
+                f"Local J25 packet cache has {len(files)} files, "
+                f"expected {impl.base.EXPECTED_PACKETS}"
+            )
+        impl.base.validate_packet_structure([p.stem for p in files])
+        packets = {}
+        for path in files:
+            packets[path.stem] = impl.base.parse_packet(
+                path.stem, path.read_text(encoding="utf-8")
+            )
+        print(f"J25_PACKET_CACHE loaded {len(packets)} pinned packets from {source}")
+        return packets
+
+    impl.base.load_packets = load_packets_from_bundle
+
+
 if __name__ == "__main__":
+    install_bundled_packet_loader()
     patch_forge_double_pumps()
     impl.main()
